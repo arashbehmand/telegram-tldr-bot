@@ -10,7 +10,6 @@ from typing import List
 import openai
 from dotenv import find_dotenv, load_dotenv
 from telegram import Update
-from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackContext,
@@ -45,6 +44,7 @@ def load_settings(file_path: str) -> dict:
     except json.JSONDecodeError:
         logging.error("Invalid JSON in settings file: %s", file_path)
         return {}
+
 
 SETTINGS = load_settings("settings.json")
 ALLOWED_CHAT_IDS: List[int] = SETTINGS.get("allowed_chat_ids", [])
@@ -257,7 +257,7 @@ async def tldr(update: Update, context: CallbackContext) -> None:
         return
     try:
         summary = get_summary_from_openai(text_to_summarize)
-        await update.message.reply_text(summary, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(summary)
     except openai.APIError as e:
         logging.error("OpenAI API error: %s", e)
         await update.message.reply_text(
@@ -349,7 +349,7 @@ def get_summary_from_openai(text_to_summarize):
             },
             {
                 "role": "user",
-                "content": "Summarize the following conversation from a chat platform. Provide a brief TLDR for the entire conversation or, if it aids clarity, an individual TLDR for each participant. The conversation includes replies and forwards. The output should be formatted in markdown without using any enclosing backtick characters. Ensure the TLDR language and tone mirror the original chat messages (e.g., if the input is in casual Japanese, the TLDR should be in casual Japanese). Do not include the original messages. The summary should be concise and capture the key information.\n\n"
+                "content": "Summarize the following conversation from a chat platform. Provide a brief TLDR for the entire conversation. The conversation includes replies and forwards. The output should be formatted in simple text without using any enclosing backtick characters or any formattings. Ensure the TLDR language and tone mirror the original chat messages (e.g., if the input is in casual Japanese, the TLDR should be in casual Japanese). Strictly do not include the original messages. The summary should be concise and capture the key information.\n\n"
                 f"## chat messages:\n```{text_to_summarize}```\n\n",
             },
         ],

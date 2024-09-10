@@ -1,9 +1,6 @@
 # Use an official Python runtime as a parent image
 FROM python:3.9-slim
 
-ENV TELEGRAM_BOT_TOKEN
-ENV OPENAI_API_KEY
-
 # Set the working directory in the container
 WORKDIR /app
 

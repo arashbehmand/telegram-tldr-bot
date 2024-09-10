@@ -4,7 +4,6 @@ services:
     build: .
     volumes:
       - .:/app
-      - ./message_history.db:/app/message_history.db
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
