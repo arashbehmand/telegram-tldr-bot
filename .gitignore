@@ -1,6 +1,8 @@
 # Application specific
 settings.json
+contacts.json
 message_history.db
+.misc/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,11 +1,12 @@
 """Telegram bot for summarizing chat messages using OpenAI."""
 
+# pylint: disable=global-statement
+
 import json
 import logging
 import os
 import sqlite3
 from datetime import datetime
-from typing import List
 
 import openai
 from dotenv import find_dotenv, load_dotenv
@@ -17,6 +18,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 load_dotenv(find_dotenv())
 
@@ -32,29 +35,88 @@ openai.api_key = OPENAI_API_KEY
 
 client = openai.OpenAI()
 
+# Add these global variables at the top of the file
+SETTINGS_FILE = "./settings.json"
+CONTACTS_FILE = "./contacts.json"
+SETTINGS = {}
+ALLOWED_CHAT_IDS = []
+ALLOWED_USER_IDS = []
+CONTACTS = {}
 
-def load_settings(file_path: str) -> dict:
-    """Load settings from a JSON file."""
+
+class FileChangeHandler(FileSystemEventHandler):
+    """Handles file modification events for settings and contacts files."""
+
+    def on_modified(self, event):
+        if os.path.abspath(event.src_path) == os.path.abspath(SETTINGS_FILE):
+            load_settings()
+        elif os.path.abspath(event.src_path) == os.path.abspath(CONTACTS_FILE):
+            load_contacts()
+
+
+def setup_file_watcher():
+    """Set up a file watcher for the settings and contacts files."""
+    observer = Observer()
+    handler = FileChangeHandler()
+    directory = os.path.dirname(
+        SETTINGS_FILE
+    )  # Assuming both files are in the same directory
+    observer.schedule(handler, path=directory, recursive=False)
+    observer.start()
+    logging.info("File watcher started for settings and contacts files")
+
+
+def load_settings():
+    """Load settings from the JSON file."""
+    global SETTINGS, ALLOWED_CHAT_IDS, ALLOWED_USER_IDS, TELEGRAM_BOT_TOKEN, OPENAI_API_KEY
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            SETTINGS = json.load(f)
+        ALLOWED_CHAT_IDS = SETTINGS.get("allowed_chat_ids", [])
+        ALLOWED_USER_IDS = SETTINGS.get("allowed_user_ids", [])
+
+        # Load tokens from settings if not in environment
+        TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or SETTINGS.get(
+            "telegram_bot_token"
+        )
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or SETTINGS.get("openai_api_key")
+
+        if not TELEGRAM_BOT_TOKEN:
+            logging.error(
+                "Telegram Bot Token not found in environment or settings file"
+            )
+        if not OPENAI_API_KEY:
+            logging.error("OpenAI API Key not found in environment or settings file")
+
+        openai.api_key = OPENAI_API_KEY
+
+        logging.info("Settings reloaded from %s", SETTINGS_FILE)
     except FileNotFoundError:
-        logging.warning("Settings file not found: %s", file_path)
-        return {}
+        logging.warning("Settings file not found: %s", SETTINGS_FILE)
     except json.JSONDecodeError:
-        logging.error("Invalid JSON in settings file: %s", file_path)
-        return {}
+        logging.error("Invalid JSON in settings file: %s", SETTINGS_FILE)
 
 
-SETTINGS = load_settings("settings.json")
-ALLOWED_CHAT_IDS: List[int] = SETTINGS.get("allowed_chat_ids", [])
-ALLOWED_USER_IDS: List[int] = SETTINGS.get("allowed_user_ids", [])
+def load_contacts():
+    """Load contacts from the JSON file into the global CONTACTS dictionary."""
+    global CONTACTS
+    try:
+        with open(CONTACTS_FILE, "r", encoding="utf-8") as f:
+            contacts_list = json.load(f)
+            CONTACTS = {str(contact["id"]): contact for contact in contacts_list}
+        logging.info("Contacts reloaded from %s", CONTACTS_FILE)
+    except FileNotFoundError:
+        logging.warning("Contacts file not found: %s", CONTACTS_FILE)
+    except json.JSONDecodeError:
+        logging.error("Invalid JSON in contacts file: %s", CONTACTS_FILE)
 
-# Remove the following functions and variables:
-# - load_allowed_chat_ids
-# - load_allowed_user_ids
-# - ALLOWED_CHAT_IDS (the original declaration)
-# - ALLOWED_USER_IDS (the original declaration)
+
+# Custom handler to check settings before processing any update
+async def settings_check_handler(_: Update, __: CallbackContext):
+    """Check settings before processing any update."""
+    # The actual checking is now done by the file watcher,
+    # so this function mainly serves as a hook for any additional pre-processing
+    return True
 
 
 def init_db():
@@ -230,7 +292,7 @@ async def tldr(update: Update, context: CallbackContext) -> None:
 
     chat_id = update.message.chat_id
 
-    if chat_id not in ALLOWED_CHAT_IDS:
+    if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
         await update.message.reply_text(
             "Sorry, this bot is not available in this chat."
         )
@@ -285,7 +347,7 @@ def get_recent_messages(chat_id: int, number_of_lines: int):
     c.execute(
         """SELECT user_first_name, user_last_name, message_text, is_forward, 
                  forward_from_name, forward_from_chat_title, reply_to_message_id,
-                 message_id
+                 message_id, user_id
                  FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?""",
         (chat_id, number_of_lines),
     )
@@ -297,12 +359,15 @@ def get_recent_messages(chat_id: int, number_of_lines: int):
 def format_messages_for_summary(messages):
     """Format messages into a single text string for summarization."""
     formatted_messages = []
-    message_dict = {
-        msg[7]: msg for msg in messages
-    }  # Create a dict with message_id as key
+    message_dict = {msg[7]: msg for msg in messages}
 
     for msg in messages:
-        user_name = f"{msg[0]} {msg[1] or ''}".strip()
+        user_id = str(msg[8])  # Assuming user_id is now included in the message tuple
+        if user_id in CONTACTS:
+            user_name = f"{CONTACTS[user_id]['first_name']} {CONTACTS[user_id]['last_name']}".strip()
+        else:
+            user_name = f"{msg[0]} {msg[1] or ''}".strip()
+
         message_text = msg[2]
         is_forward = msg[3]
         forward_from_name = msg[4]
@@ -362,7 +427,20 @@ def get_summary_from_openai(text_to_summarize):
 def main() -> None:
     """Initialize and run the Telegram bot application."""
     init_db()  # Initialize the database
+    load_settings()  # Initial load of settings
+    load_contacts()  # Load contacts from JSON file
+    setup_file_watcher()  # Set up the file watcher
+
+    if not TELEGRAM_BOT_TOKEN:
+        logging.error("Telegram Bot Token is missing. Cannot start the bot.")
+        return
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Add the settings check handler to run before any other handler
+    application.add_handler(
+        MessageHandler(filters.ALL, settings_check_handler), group=-1
+    )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("tldr", tldr))
