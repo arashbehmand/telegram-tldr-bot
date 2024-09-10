@@ -128,7 +128,7 @@ async def tldr(update: Update, context: CallbackContext) -> None:
 
     text_to_summarize = format_messages_for_summary(messages)
 
-    if len(text_to_summarize) > 4000:
+    if len(text_to_summarize) > 20000:
         await update.message.reply_text(
             "Too many messages to summarize. Please try a smaller number."
         )
