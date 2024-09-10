@@ -1,0 +1,10 @@
+{
+    "allowed_chat_ids": [
+        1,
+        2
+    ],
+    "allowed_user_ids": [
+        3,
+        4
+    ]
+}
