@@ -1,4 +1,4 @@
-"""Telegram bot for summarizing chat messages using OpenAI."""
+"""Telegram bot for summarizing chat messages using LangChain."""
 
 # pylint: disable=global-statement
 
@@ -7,6 +7,9 @@ import os
 
 import openai
 from dotenv import find_dotenv, load_dotenv
+from langchain.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
+from langchain.schema import SystemMessage
+from langchain_openai import ChatOpenAI
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -16,8 +19,8 @@ from telegram.ext import (
     filters,
 )
 
-from db import init_db, store_message_history, get_recent_messages
 import configs
+from db import get_recent_messages, init_db, store_message_history
 
 load_dotenv(find_dotenv())
 
@@ -131,18 +134,13 @@ async def tldr(update: Update, context: CallbackContext) -> None:
         )
         return
     try:
-        summary = get_summary_from_openai(text_to_summarize)
+        summary = get_summary_from_langchain(text_to_summarize)
         await update.message.reply_text(summary)
-    except openai.APIError as e:
-        logging.error("OpenAI API error: %s", e)
+    # pylint: disable-next=broad-exception-caught
+    except Exception as e:
+        logging.error("LangChain error: %s", e)
         await update.message.reply_text(
             "An error occurred while generating the summary. Please try again later."
-        )
-    #pylint: disable-next=broad-exception-caught
-    except Exception as e:
-        logging.error("Unexpected error: %s", e)
-        await update.message.reply_text(
-            "An unexpected error occurred. Please try again later."
         )
 
 
@@ -202,25 +200,24 @@ def format_messages_for_summary(messages):
     return "\n".join(formatted_messages)
 
 
-def get_summary_from_openai(text_to_summarize):
-    """Get a summary of the text using OpenAI's API."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that summarizes text.",
-            },
-            {
-                "role": "user",
-                "content": "Summarize the following conversation from a chat platform. Provide a brief TLDR for the entire conversation. The conversation includes replies and forwards. The output should be formatted in simple text without using any enclosing backtick characters or any formattings. Ensure the TLDR language and tone mirror the original chat messages (e.g., if the input is in casual Japanese, the TLDR should be in casual Japanese). Strictly do not include the original messages. The summary should be concise and capture the key information.\n\n"
-                f"## chat messages:\n```{text_to_summarize}```\n\nTLDR:\n",
-            },
-        ],
-        max_tokens=4000,
+def get_summary_from_langchain(text_to_summarize):
+    """Get a summary of the text using LangChain with OpenAI's API."""
+    chat = ChatOpenAI(model="gpt-4o-mini", temperature=0.05, top_p=0.8)
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            SystemMessage(
+                content="You are a helpful assistant specialized in summarizing text conversations from chat platforms. Follow these specific instructions to create concise and informative summaries that capture the essence of the provided chat messages."
+            ),
+            HumanMessagePromptTemplate.from_template(
+                "Summarize the following conversation from a chat platform. Choose between two summarization methods based on clarity and informativeness:\n1. Provide a single summary for the entire conversation if it consists mainly of a continuous thread.\n2. Provide individual summaries for each participant if the conversation involves a debate or opposing viewpoints.\n\n**Guidelines:**\n- **Format:** Present the summary in plain text without any special formatting or enclosing characters.\n- **Language and Tone:** Ensure the summary's language and tone mirror the original chat messages (e.g., if the input is in casual Japanese, the summary should be in casual Japanese). If unsure about the language, default to the non-English language.\n- **RTL Handling:** For right-to-left (RTL) languages, prepend each new line with a Right-To-Left Mark (‎\u200F) and avoid starting lines with left-to-right (LTR) characters.\n- **Content:** Focus on key information and main points of the conversation, including relevant context from replies and forwarded messages. Omit the original messages and the term 'summary' from your output.\n- **Perspective:** Always write the summary from a third-person view.\n- **Length:** Keep the summary concise while ensuring all crucial information is included.\n\n**Chat messages:**\n```\n{text_to_summarize}\n```\n\n**Summary:**\n"
+            ),
+        ]
     )
 
-    return response.choices[0].message.content.strip()
+    messages = prompt.format_messages(text_to_summarize=text_to_summarize)
+    response = chat.invoke(messages)
+    return response.content.strip()
 
 
 def main() -> None:
@@ -267,7 +264,7 @@ def main() -> None:
 
     try:
         application.run_polling()
-    #pylint: disable-next=broad-exception-caught
+    # pylint: disable-next=broad-exception-caught
     except Exception as e:
         logging.error("Error running the bot: %s", e)
 
